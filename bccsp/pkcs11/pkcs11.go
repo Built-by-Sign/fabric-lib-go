@@ -349,9 +349,11 @@ func (csp *Provider) verifyECDSA(k ecdsaPublicKey, signature, digest []byte) (bo
 // for a slot. A caller that subsequently pulls that cached session out will
 // reacquire its own slot.
 func (csp *Provider) getSession() (session pkcs11.SessionHandle, err error) {
+	acqStart := time.Now()
 	if err = csp.sessSem.Acquire(context.Background(), 1); err != nil {
 		return 0, errors.Wrap(err, "acquire session slot")
 	}
+	recordP11Phase("p11_acquire_wait", acqStart)
 
 	select {
 	case session = <-csp.sessPool:
@@ -359,7 +361,9 @@ func (csp *Provider) getSession() (session pkcs11.SessionHandle, err error) {
 	default:
 	}
 
+	createStart := time.Now()
 	session, err = csp.createSession()
+	recordP11Phase("p11_create_session", createStart)
 	if err != nil {
 		csp.sessSem.Release(1)
 	}
@@ -635,19 +639,25 @@ func (csp *Provider) signP11ECDSA(ski []byte, msg []byte) (R, S *big.Int, err er
 	}
 	defer func() { csp.handleSessionReturn(err, session) }()
 
+	fkStart := time.Now()
 	privateKey, err := csp.findKeyPairFromSKI(session, ski, privateKeyType)
+	recordP11Phase("p11_find_key", fkStart)
 	if err != nil {
 		return nil, nil, fmt.Errorf("Private key not found [%s]", err)
 	}
 
+	siStart := time.Now()
 	err = csp.ctx.SignInit(session, []*pkcs11.Mechanism{pkcs11.NewMechanism(pkcs11.CKM_ECDSA, nil)}, privateKey)
+	recordP11Phase("p11_sign_init", siStart)
 	if err != nil {
 		return nil, nil, fmt.Errorf("Sign-initialize  failed [%s]", err)
 	}
 
 	var sig []byte
 
+	sStart := time.Now()
 	sig, err = csp.ctx.Sign(session, msg)
+	recordP11Phase("p11_sign", sStart)
 	if err != nil {
 		return nil, nil, fmt.Errorf("P11: sign failed [%s]", err)
 	}
